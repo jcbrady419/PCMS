@@ -1,0 +1,598 @@
+import maya.cmds as cmds
+import math
+
+class PrimitiveSpawner:
+    def __init__(self, curve_name, prefix_text, primitive_type='', use_instances=False):
+        self.curve_name = curve_name
+        self.prefix_text = prefix_text
+        self.primitive_type = primitive_type
+        self.use_instances = use_instances
+        self.spawned_objects = []
+        
+    def show_error_message(self, message):
+        cmds.confirmDialog(
+            title='Error',
+            message=message,
+            button=['OK'],
+            defaultButton='OK',
+            cancelButton='OK',
+            dismissString='OK'
+        )
+
+    def spawn_instances_on_curve_cvs(self, world_space, scale_value):
+        group_name = self.check_for_existing_group()
+    
+        if not group_name:
+            return  # Cancel the operation if the group creation was canceled
+    
+        curve_shape = self.get_curve_shape()
+    
+        if not curve_shape:
+            self.show_error_message("Selected object is not a NURBS curve.")
+            return
+        
+        cv_count = cmds.getAttr(curve_shape + '.spans') + cmds.getAttr(curve_shape + '.degree')
+        unique_positions = []
+        original_primitive = None
+    
+        for i in range(cv_count):
+            cv_position = cmds.pointPosition(f'{curve_shape}.cv[{i}]', world=True)
+            if world_space:
+                cv_position = cmds.pointPosition(f'{curve_shape}.cv[{i}]', world=True)  # Ensure position is in world space
+            if cv_position not in unique_positions:
+                unique_positions.append(cv_position)
+                if i == 0:
+                    if not self.use_instances:
+                        original_primitive = self.create_primitive(f'{self.prefix_text}_1')
+                    else:
+                        original_primitive = self.create_primitive(f'{self.prefix_text}_Original')
+                    cmds.move(cv_position[0], cv_position[1], cv_position[2], original_primitive)
+                    # Apply scale
+                    cmds.setAttr(f'{original_primitive}.scaleX', scale_value)
+                    cmds.setAttr(f'{original_primitive}.scaleY', scale_value)
+                    cmds.setAttr(f'{original_primitive}.scaleZ', scale_value)
+                    self.spawned_objects.append(original_primitive)
+                    if world_space:  # Rotate towards origin if world_space is checked
+                        self.rotate_towards_origin(original_primitive)
+                else:
+                    if self.use_instances:
+                        primitive_instance = cmds.instance(original_primitive, name=f'{self.prefix_text}_{i}')[0]
+                    else:
+                        primitive_instance = cmds.duplicate(original_primitive, name=f'{self.prefix_text}_{i+1}')[0]
+                    cmds.move(cv_position[0], cv_position[1], cv_position[2], primitive_instance)
+                    # Apply scale
+                    cmds.setAttr(f'{primitive_instance}.scaleX', scale_value)
+                    cmds.setAttr(f'{primitive_instance}.scaleY', scale_value)
+                    cmds.setAttr(f'{primitive_instance}.scaleZ', scale_value)
+                    self.spawned_objects.append(primitive_instance)
+                    if world_space:  # Rotate towards origin if world_space is checked
+                        self.rotate_towards_origin(primitive_instance)
+    
+        self.group_spawned_objects(group_name)
+    
+    def check_for_existing_group(self):
+        base_group_name = f'{self.prefix_text}_grp'
+        existing_groups = cmds.ls(f'{self.prefix_text}_grp*', type='transform')
+
+        if existing_groups:
+            result = cmds.confirmDialog(
+                title='Group Already Exists',
+                message='A group with this prefix already exists. Would you like to spawn another one?',
+                button=['Yes', 'No'],
+                defaultButton='Yes',
+                cancelButton='No',
+                dismissString='No'
+            )
+            
+            if result == 'No':
+                return None
+            
+            # If Yes, prompt user to confirm new prefix with numerical value
+            new_prefix = self.get_unique_prefix(self.prefix_text)
+            confirm_new_prefix = cmds.confirmDialog(
+                title='New Prefix Assignment',
+                message=f'A similar prefix exists. Would you like to use "{new_prefix}" for the new group?',
+                button=['Yes', 'No'],
+                defaultButton='Yes',
+                cancelButton='No',
+                dismissString='No'
+            )
+
+            if confirm_new_prefix == 'No':
+                return None
+            
+            self.prefix_text = new_prefix
+            return f'{self.prefix_text}_grp'
+        
+        return base_group_name
+
+    def group_spawned_objects(self, group_name):
+        cmds.group(self.spawned_objects, name=group_name)
+
+    def get_unique_prefix(self, prefix_text):
+        base_prefix = prefix_text
+        count = 1
+
+        while cmds.objExists(f'{base_prefix}_Original'):
+            base_prefix = f'{prefix_text}{count}'
+            count += 1
+        
+        return base_prefix
+
+    def get_curve_shape(self):
+        curve_shape = cmds.listRelatives(self.curve_name, shapes=True, noIntermediate=True)
+        if not curve_shape or cmds.nodeType(curve_shape[0]) != 'nurbsCurve':
+            return None
+        return curve_shape[0]
+
+    def create_primitive(self, name):
+        if self.primitive_type == 'Cube':
+            return cmds.polyCube(name=name)[0]
+        elif self.primitive_type == 'Sphere':
+            return cmds.polySphere(name=name)[0]
+        elif self.primitive_type == 'Cylinder':
+            return cmds.polyCylinder(name=name)[0]
+        elif self.primitive_type == 'Torus':
+            return cmds.polyTorus(name=name)[0]
+        elif self.primitive_type == 'Cone':
+            return cmds.polyCone(name=name)[0]
+        elif self.primitive_type == 'Plane':
+            return cmds.polyPlane(name=name)[0]
+        else:
+            self.show_error_message("Unsupported primitive type.")
+            return None
+
+    def spawn_asset_on_curve(self, asset_name, world_space, scale_value):
+        group_name = self.check_for_existing_group()
+        if not group_name:
+            return  # Cancel the operation if the group creation was canceled
+        
+        # Check if the asset is a mesh
+        mesh_shapes = cmds.listRelatives(asset_name, shapes=True, type='mesh', fullPath=True)
+        if not mesh_shapes:
+            self.show_error_message("The asset is not a mesh. Please provide a mesh asset.")
+            return
+        
+        curve_shape = self.get_curve_shape()
+        if not curve_shape:
+            self.show_error_message("Selected object is not a NURBS curve.")
+            return
+        
+        cv_count = cmds.getAttr(curve_shape + '.spans') + cmds.getAttr(curve_shape + '.degree')
+        unique_positions = []
+        original_asset_instance = None
+    
+        for i in range(cv_count):
+            cv_position = cmds.pointPosition(f'{curve_shape}.cv[{i}]', world=True)
+            if world_space:
+                cv_position = cmds.pointPosition(f'{curve_shape}.cv[{i}]', world=True)  # Ensure position is in world space
+            if cv_position not in unique_positions:
+                unique_positions.append(cv_position)
+                if i == 0:
+                    if not self.use_instances:
+                        original_asset_instance = cmds.duplicate(asset_name, name=f'{self.prefix_text}_1')[0]
+                    else:
+                        original_asset_instance = cmds.duplicate(asset_name, name=f'{self.prefix_text}_Original')[0]
+                    cmds.move(cv_position[0], cv_position[1], cv_position[2], original_asset_instance)
+                    # Apply scale
+                    cmds.setAttr(f'{original_asset_instance}.scaleX', scale_value)
+                    cmds.setAttr(f'{original_asset_instance}.scaleY', scale_value)
+                    cmds.setAttr(f'{original_asset_instance}.scaleZ', scale_value)
+                    self.spawned_objects.append(original_asset_instance)
+                    if world_space:  # Rotate towards origin if world_space is checked
+                        self.rotate_towards_origin(original_asset_instance)
+                else:
+                    if self.use_instances:
+                        asset_instance = cmds.instance(original_asset_instance, name=f'{self.prefix_text}_{i}')[0]
+                    else:
+                        asset_instance = cmds.duplicate(original_asset_instance, name=f'{self.prefix_text}_{i+1}')[0]
+                    cmds.move(cv_position[0], cv_position[1], cv_position[2], asset_instance)
+                    # Apply scale
+                    cmds.setAttr(f'{asset_instance}.scaleX', scale_value)
+                    cmds.setAttr(f'{asset_instance}.scaleY', scale_value)
+                    cmds.setAttr(f'{asset_instance}.scaleZ', scale_value)
+                    self.spawned_objects.append(asset_instance)
+                    if world_space:  # Rotate towards origin if world_space is checked
+                        self.rotate_towards_origin(asset_instance)
+    
+        self.group_spawned_objects(group_name)
+        
+    def uninstance_group(self, group_name):
+        if not cmds.objExists(group_name):
+            self.show_error_message(f"Group {group_name} does not exist.")
+            return
+        
+        # Get all transforms under the group, including nested ones
+        children = cmds.listRelatives(group_name, allDescendents=True, type='transform', fullPath=True)
+        
+        if not children:
+            self.show_error_message(f"No transforms found in group {group_name}.")
+            return
+        
+        # Delete history for each item
+        for child in children:
+            if cmds.objExists(child):
+                cmds.delete(child, constructionHistory=True)
+        
+        # Filter out the meshes from the transforms
+        meshes = []
+        for child in children:
+            mesh_shapes = cmds.listRelatives(child, shapes=True, type='mesh', fullPath=True)
+            if mesh_shapes:
+                meshes.append(child)
+        
+        if not meshes:
+            self.show_error_message(f"No meshes found in group {group_name}.")
+            return
+        
+        # Duplicate each instance to remove instancing without combining and separating
+        unique_meshes = []
+        for mesh in meshes:
+            base_name = mesh.split('|')[-1]
+            new_name = base_name + '_nonInstance'
+            unique_mesh = cmds.duplicate(mesh, name=new_name, inputConnections=True)[0]
+            unique_meshes.append(unique_mesh)
+        
+        # Delete the original instanced meshes
+        cmds.delete(meshes)
+        
+        # Optionally group the unique meshes back into the original group
+        try:
+            if cmds.objectType(group_name) == 'transform':
+                cmds.parent(unique_meshes, group_name)
+        except Exception as e:
+            print(f"An error occurred while parenting objects: {e}")
+        
+        cmds.select(clear=True)
+        
+    def reinstance_group(self, group_name, original_mesh_name, prefix):
+        # Check if the group exists
+        if not cmds.objExists(group_name):
+            self.show_error_message(f"Group {group_name} does not exist.")
+            return
+        
+        # Check if the original mesh exists
+        if not cmds.objExists(original_mesh_name):
+            self.show_error_message(f"Original mesh {original_mesh_name} does not exist.")
+            return
+        
+        # Delete the history of the original mesh
+        if cmds.objExists(original_mesh_name):
+            cmds.delete(original_mesh_name, constructionHistory=True)
+        
+        # Get all transforms under the group, excluding the original mesh
+        children = cmds.listRelatives(group_name, allDescendents=True, type='transform', fullPath=True)
+        
+        if not children:
+            self.show_error_message(f"No transforms found in group {group_name}.")
+            return
+        
+        # Filter out the meshes from the transforms
+        meshes = []
+        for child in children:
+            if child != original_mesh_name:  # Exclude the original mesh
+                mesh_shapes = cmds.listRelatives(child, shapes=True, type='mesh', fullPath=True)
+                if mesh_shapes:
+                    meshes.append(child)
+        
+        if not meshes:
+            self.show_error_message(f"No meshes to re-instance found in group {group_name}.")
+            return
+        
+        # Store original transformations for each mesh
+        transformations = []
+        for mesh in meshes:
+            transformation = {
+                'translate': cmds.xform(mesh, query=True, translation=True, worldSpace=True),
+                'rotate': cmds.xform(mesh, query=True, rotation=True, worldSpace=True),
+                'scale': cmds.xform(mesh, query=True, scale=True, worldSpace=True),
+            }
+            transformations.append(transformation)
+        
+        # Delete the meshes to be re-instanced
+        cmds.delete(meshes)
+        
+        # Reinstance the meshes based on the original mesh
+        new_instances = []
+        for i, transform in enumerate(transformations):
+            # Create a new instance of the original mesh
+            new_instance = cmds.instance(original_mesh_name)[0]
+            
+            # Set the instance's transformation
+            cmds.xform(new_instance, translation=transform['translate'], worldSpace=True)
+            cmds.xform(new_instance, rotation=transform['rotate'], worldSpace=True)
+            cmds.xform(new_instance, scale=transform['scale'], worldSpace=True)
+            
+            # Rename the instance with the prefix and numbering
+            new_name = f"{prefix}_{i+1}"
+            new_instance = cmds.rename(new_instance, new_name)
+            
+            new_instances.append(new_instance)
+        
+        # Rename the original mesh last to avoid lookup issues
+        original_mesh_new_name = f"{prefix}_Original"
+        cmds.rename(original_mesh_name, original_mesh_new_name)
+        
+        # Optionally, group the instances back under the original group
+        if new_instances:  # Check if there are new instances to parent
+            if cmds.objExists(group_name) and cmds.nodeType(group_name) == 'transform':
+                try:
+                    cmds.parent(new_instances, group_name)
+                except RuntimeError as e:
+                    # Suppress the error and optionally log or handle it
+                    print(f"An error occurred while parenting new instances: {e}")
+        
+        cmds.select(clear=True)
+        
+    def rotate_towards_origin(self, object_name):
+        # Get the position of the object
+        object_position = cmds.xform(object_name, q=True, ws=True, t=True)
+        
+        # Calculate direction vector from object to world origin
+        direction_vector = [-object_position[0], 0, -object_position[2]]  # Ignore Y axis
+        
+        # Calculate the angle on the Y axis between the object's current facing direction and the origin
+        angle = math.degrees(math.atan2(direction_vector[0], direction_vector[2]))
+        
+        # Apply rotation to the Y axis of the object
+        cmds.rotate(0, angle, 0, object_name, ws=True)
+
+
+class ProceduralSpawnerUI:
+    def __init__(self):
+        self.window = "spawnObjectsUI"
+        self.curve_text_field = None
+        self.prefix_text_field = None
+        self.primitive_dropdown = None
+        self.asset_name_field = None
+        self.instance_checkbox_primitive = None
+        self.instance_checkbox_asset = None
+        self.group_text_field = None
+        self.original_mesh_text_field = None
+        self.prefix_reinstance_field = None
+        self.scale_text_field_primitive = None
+        self.scale_text_field_asset = None
+
+    def create_ui(self):
+        if cmds.window(self.window, exists=True):
+            cmds.deleteUI(self.window)
+        
+        self.window = cmds.window(self.window, title="Spawn Meshes on Curve", widthHeight=(300, 400))
+        tabs = cmds.tabLayout(innerMarginWidth=5, innerMarginHeight=5)
+        
+        # Primitive spawning tab
+        primitive_tab = cmds.columnLayout(adjustableColumn=True)
+        
+        # Curve Name
+        cmds.text(label="Enter or Drag the Curve Name:")
+        row_layout = cmds.rowLayout(numberOfColumns=2, columnWidth2=(70, 1), adjustableColumn=2)
+        cmds.button(label="Clear", command=lambda x: self.clear_text_field('curveTextField'), width=70, height=20)
+        self.curve_text_field = cmds.textField('curveTextField', dragCallback=self.drop_callback, width=200)
+        cmds.setParent('..')
+        cmds.separator(height=10, style="none")
+        
+        # Prefix for Objects
+        cmds.text(label="Enter Prefix for Primitives:")
+        row_layout = cmds.rowLayout(numberOfColumns=2, columnWidth2=(70, 1), adjustableColumn=2)
+        cmds.button(label="Clear", command=lambda x: self.clear_text_field('prefixTextField'), width=70, height=20)
+        self.prefix_text_field = cmds.textField('prefixTextField', width=200)
+        cmds.setParent('..')
+        cmds.separator(height=10, style="none")
+        
+        # Uniform Scale for Primitives
+        cmds.columnLayout(adjustableColumn=True, width=300)  # Center alignment layout
+        cmds.text(label="Uniform Scale:", align="center")
+        self.scale_text_field_primitive = cmds.textField('scaleTextFieldPrimitive', width=200, text='1.0')
+        cmds.setParent('..')  # Return to parent layout
+        cmds.separator(height=10, style="none")
+        
+        # Select Primitive Type
+        cmds.text(label="Select Primitive Type:")
+        self.primitive_dropdown = cmds.optionMenu('primitiveDropdown')
+        self.populate_primitive_dropdown()
+        
+        self.instance_checkbox_primitive = cmds.checkBox(label="Instances")
+        self.world_space_checkbox_primitive = cmds.checkBox(label="Face World Center")
+        cmds.button(label="Spawn Primitives", command=self.on_spawn_primitive_button)
+        cmds.setParent('..')
+        
+        # Asset spawning tab
+        asset_tab = cmds.columnLayout(adjustableColumn=True)
+        
+        # Curve Name
+        cmds.text(label="Enter or Drag the Curve Name:")
+        row_layout = cmds.rowLayout(numberOfColumns=2, columnWidth2=(70, 1), adjustableColumn=2)
+        cmds.button(label="Clear", command=lambda x: self.clear_text_field('assetCurveTextField'), width=70, height=20)
+        self.curve_text_field = cmds.textField('assetCurveTextField', dragCallback=self.drop_callback, width=200)
+        cmds.setParent('..')
+        cmds.separator(height=10, style="none")
+        
+        # Asset Name
+        cmds.text(label="Enter or Drag the Asset Name:")
+        row_layout = cmds.rowLayout(numberOfColumns=2, columnWidth2=(70, 1), adjustableColumn=2)
+        cmds.button(label="Clear", command=lambda x: self.clear_text_field('assetNameField'), width=70, height=20)
+        self.asset_name_field = cmds.textField('assetNameField', dragCallback=self.drop_callback, width=200)
+        cmds.setParent('..')
+        cmds.separator(height=10, style="none")
+        
+        # Prefix for Assets
+        cmds.text(label="Enter Prefix for Assets:")
+        row_layout = cmds.rowLayout(numberOfColumns=2, columnWidth2=(70, 1), adjustableColumn=2)
+        cmds.button(label="Clear", command=lambda x: self.clear_text_field('assetPrefixTextField'), width=70, height=20)
+        self.prefix_text_field = cmds.textField('assetPrefixTextField', width=200)
+        cmds.setParent('..')
+        cmds.separator(height=10, style="none")
+        
+        # Uniform Scale for Assets
+        cmds.columnLayout(adjustableColumn=True, width=300)  # Center alignment layout (similar to the one in primitives tab)
+        cmds.text(label="Uniform Scale:", align="center")
+        self.scale_text_field_asset = cmds.textField('scaleTextFieldAsset', width=200, text='1.0')
+        cmds.setParent('..')  # Return to parent layout
+        cmds.separator(height=10, style="none")
+        
+        self.instance_checkbox_asset = cmds.checkBox(label="Instances")
+        self.world_space_checkbox_asset = cmds.checkBox(label="Face World Center")
+        cmds.button(label="Spawn Assets", command=self.on_spawn_asset_button)
+        cmds.setParent('..')
+        
+        # Instancing tab (renamed from Uninstance & Re-Instance)
+        instancing_tab = cmds.columnLayout(adjustableColumn=True)
+        
+        # UNINSTANCE Section
+        cmds.text(label="UNINSTANCE", align="center", font="boldLabelFont")
+        cmds.separator(height=5, style="none")
+        cmds.text(label="Enter or Drag the Group Name:")
+        row_layout = cmds.rowLayout(numberOfColumns=2, columnWidth2=(70, 1), adjustableColumn=2)
+        cmds.button(label="Clear", command=lambda x: self.clear_text_field('groupTextField'), width=70, height=20)
+        self.group_text_field = cmds.textField('groupTextField', dragCallback=self.drop_callback, width=200)
+        cmds.setParent('..')
+        cmds.separator(height=10, style="none")
+        cmds.button(label="Get Rid of Instances", command=self.on_uninstance_button)
+        
+        # Separator between sections
+        cmds.separator(height=20, style="in")
+        
+        # RE-INSTANCE Section
+        cmds.text(label="REINSTANCE", align="center", font="boldLabelFont")
+        cmds.separator(height=5, style="none")
+        cmds.text(label="Enter Group Name:")
+        row_layout = cmds.rowLayout(numberOfColumns=2, columnWidth2=(70, 1), adjustableColumn=2)
+        cmds.button(label="Clear", command=lambda x: self.clear_text_field('reinstanceGroupField'), width=70, height=20)
+        self.group_text_field = cmds.textField('reinstanceGroupField', dragCallback=self.drop_callback, width=200)
+        cmds.setParent('..')
+        cmds.separator(height=10, style="none")
+        
+        # Original Mesh Name
+        cmds.text(label="Enter Original Mesh Name:")
+        row_layout = cmds.rowLayout(numberOfColumns=2, columnWidth2=(70, 1), adjustableColumn=2)
+        cmds.button(label="Clear", command=lambda x: self.clear_text_field('originalMeshField'), width=70, height=20)
+        self.original_mesh_text_field = cmds.textField('originalMeshField', dragCallback=self.drop_callback, width=200)
+        cmds.setParent('..')
+        cmds.separator(height=10, style="none")
+        
+        # Prefix for Re-Instances
+        cmds.text(label="Enter Prefix for Re-Instances:")
+        row_layout = cmds.rowLayout(numberOfColumns=2, columnWidth2=(70, 1), adjustableColumn=2)
+        cmds.button(label="Clear", command=lambda x: self.clear_text_field('prefixReinstanceField'), width=70, height=20)
+        self.prefix_reinstance_field = cmds.textField('prefixReinstanceField', width=200)
+        cmds.setParent('..')
+        cmds.separator(height=10, style="none")
+        
+        cmds.button(label="ReInstance Meshes", command=self.on_reinstance_button)
+        cmds.setParent('..')
+        
+        cmds.tabLayout(tabs, edit=True, tabLabel=(
+            (primitive_tab, 'Primitives'),
+            (asset_tab, 'Assets'),
+            (instancing_tab, 'Instancing')  # Renamed tab
+        ))
+        
+        cmds.showWindow(self.window)
+        
+        # Create a dockable panel
+        if cmds.dockControl('myDockControl', exists=True):
+            cmds.deleteUI('myDockControl', control=True)
+        
+        cmds.dockControl(
+            'myDockControl',
+            label='Spawn Meshes Tool',
+            area='left',  # Initial docking area
+            content=self.window,
+            allowedArea=['left', 'right', 'top', 'bottom'],  # Allowed docking areas
+            width=300,  # Default width
+            height=300  # Default height
+        )
+
+    def sanitize_prefix(self, prefix):
+        return prefix.replace(' ', '_')
+
+    def clear_text_field(self, text_field_name):
+        cmds.textField(text_field_name, edit=True, text='')
+
+    def on_uninstance_button(self, *args):
+        group_name = cmds.textField('groupTextField', query=True, text=True)
+
+        if not group_name:
+            self.show_error_message("Please enter or drag in the group name.")
+            return
+
+        # Sanitize prefix if applicable (though it might not be necessary for this method)
+        group_name = self.sanitize_prefix(group_name)
+
+        spawner = PrimitiveSpawner('', '')  # Pass empty strings since they aren't needed
+        spawner.uninstance_group(group_name)
+
+    def on_reinstance_button(self, *args):
+        group_name = cmds.textField('reinstanceGroupField', query=True, text=True)
+        original_mesh = cmds.textField('originalMeshField', query=True, text=True)
+        prefix = cmds.textField('prefixReinstanceField', query=True, text=True)
+
+        if not group_name or not original_mesh or not prefix:
+            self.show_error_message("Please enter the group name, original mesh name, and prefix.")
+            return
+
+        # Sanitize prefix
+        prefix = self.sanitize_prefix(prefix)
+
+        spawner = PrimitiveSpawner('', '')  # Initialize spawner
+        spawner.reinstance_group(group_name, original_mesh, prefix)
+
+    def drop_callback(self, dragControl, x, y, modifiers):
+        dropped_item = cmds.ls(selection=True)
+        if dropped_item:
+            cmds.textField(dragControl, edit=True, text=dropped_item[0])
+
+    def populate_primitive_dropdown(self):
+        primitives = ['Cube', 'Sphere', 'Cylinder', 'Torus', 'Cone', 'Plane']
+        for primitive in primitives:
+            cmds.menuItem(label=primitive)
+
+    def on_spawn_primitive_button(self, *args):
+        curve_name = cmds.textField('curveTextField', query=True, text=True)
+        prefix_text = cmds.textField('prefixTextField', query=True, text=True)
+        primitive_type = cmds.optionMenu('primitiveDropdown', query=True, value=True)
+        use_instances = cmds.checkBox(self.instance_checkbox_primitive, query=True, value=True)
+        world_space = cmds.checkBox(self.world_space_checkbox_primitive, query=True, value=True)  # Read checkbox state
+        scale_value = cmds.textField('scaleTextFieldPrimitive', query=True, text=True)
+
+        if not curve_name or not prefix_text or not primitive_type:
+            self.show_error_message("Please enter the curve name, prefix, and select a primitive type.")
+            return
+
+        # Sanitize prefix
+        prefix_text = self.sanitize_prefix(prefix_text)
+
+        spawner = PrimitiveSpawner(curve_name, prefix_text, primitive_type, use_instances)
+        spawner.spawn_instances_on_curve_cvs(world_space, float(scale_value))  # Pass scale value
+
+    def on_spawn_asset_button(self, *args):
+        curve_name = cmds.textField('assetCurveTextField', query=True, text=True)
+        prefix_text = cmds.textField('assetPrefixTextField', query=True, text=True)
+        asset_name = cmds.textField('assetNameField', query=True, text=True)
+        use_instances = cmds.checkBox(self.instance_checkbox_asset, query=True, value=True)
+        world_space = cmds.checkBox(self.world_space_checkbox_asset, query=True, value=True)  # Read checkbox state
+        scale_value = cmds.textField('scaleTextFieldAsset', query=True, text=True)
+
+        if not curve_name or not prefix_text or not asset_name:
+            self.show_error_message("Please enter the curve name, prefix, and asset name.")
+            return
+
+        # Sanitize prefix
+        prefix_text = self.sanitize_prefix(prefix_text)
+
+        spawner = PrimitiveSpawner(curve_name, prefix_text, use_instances=use_instances)
+        spawner.spawn_asset_on_curve(asset_name, world_space, float(scale_value))  # Pass scale value
+
+    def show_error_message(self, message):
+        cmds.confirmDialog(
+            title='Error',
+            message=message,
+            button=['OK'],
+            defaultButton='OK',
+            cancelButton='OK',
+            dismissString='OK'
+        )
+
+# To create and display the UI
+ui = ProceduralSpawnerUI()
+ui.create_ui()
